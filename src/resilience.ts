@@ -272,6 +272,21 @@ export function isRetryableError(
 // =============================================================================
 
 /**
+ * Check if an error should count as a failure for the circuit breaker.
+ *
+ * Network errors, timeouts, rate limits and 5xx responses count. Other 4xx
+ * responses (not found, validation, insufficient balance) are the caller's
+ * problem, not a sign that the API is unhealthy.
+ */
+export function isCircuitBreakerFailure(error: unknown): boolean {
+  const statusCode = (error as { statusCode?: number } | null)?.statusCode;
+  if (typeof statusCode !== 'number' || statusCode < 400 || statusCode >= 500) {
+    return true;
+  }
+  return statusCode === 408 || statusCode === 429;
+}
+
+/**
  * Circuit breaker states.
  */
 export type CircuitState = 'closed' | 'open' | 'half_open';
@@ -796,8 +811,11 @@ export class ResilienceManager {
           continue;
         }
 
-        // Not retryable or exhausted retries
-        this.circuitBreaker.recordFailure();
+        // Not retryable or exhausted retries. Client errors (4xx) mean the
+        // API answered, so they should not count toward opening the circuit.
+        if (isCircuitBreakerFailure(error)) {
+          this.circuitBreaker.recordFailure();
+        }
 
         // Record failure metrics
         if (this.metrics) {
